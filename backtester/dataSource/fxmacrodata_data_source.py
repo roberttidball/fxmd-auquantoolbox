@@ -43,14 +43,15 @@ class FXMacroDataCalendarDataSource(DataSource):
             "start_date": self._startDate.strftime("%Y-%m-%d"),
             "end_date": self._endDate.strftime("%Y-%m-%d"),
         }
+        headers = {"Accept": "application/json", "User-Agent": "auquantoolbox-fxmacrodata"}
         api_key = os.getenv("FXMD_API_KEY")
         if api_key:
-            params["api_key"] = api_key
-        url = "https://fxmacrodata.com/api/v1/calendar/%s?%s" % (
+            headers["X-API-Key"] = api_key
+        url = "https://api.fxmacrodata.com/v1/calendar/%s?%s" % (
             self._currency,
             urlencode(params),
         )
-        request = Request(url, headers={"Accept": "application/json", "User-Agent": "auquantoolbox-fxmacrodata"})
+        request = Request(url, headers=headers)
         with urlopen(request, timeout=20) as response:
             payload = json.loads(response.read().decode("utf-8"))
         rows = payload.get("data") or []
