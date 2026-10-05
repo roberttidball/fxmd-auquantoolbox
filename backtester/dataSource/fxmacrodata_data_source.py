@@ -44,17 +44,23 @@ class FXMacroDataCalendarDataSource(DataSource):
             "end_date": self._endDate.strftime("%Y-%m-%d"),
         }
         headers = {"Accept": "application/json", "User-Agent": "auquantoolbox-fxmacrodata"}
-        api_key = os.getenv("FXMD_API_KEY")
-        if api_key:
-            headers["X-API-Key"] = api_key
+        api_key = (os.getenv("FXMD_API_KEY") or "").strip()
+        if any(ch.isspace() or not ch.isprintable() for ch in api_key):
+            raise ValueError("FXMD_API_KEY contains whitespace or control characters")
         url = "https://api.fxmacrodata.com/v1/calendar/%s?%s" % (
             self._currency,
             urlencode(params),
         )
         request = Request(url, headers=headers)
+        if api_key:
+            # Unredirected headers are not copied onto a redirected request.
+            request.add_unredirected_header("X-API-Key", api_key)
         with urlopen(request, timeout=20) as response:
             payload = json.loads(response.read().decode("utf-8"))
-        rows = payload.get("data") or []
+        rows = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+            detail = payload.get("detail") if isinstance(payload, dict) else None
+            raise ValueError("Unexpected FXMacroData calendar response%s" % (": %s" % detail if detail else ""))
         if self._topTierOnly:
             rows = [row for row in rows if row.get("top_tier_for_currency") or row.get("market_tier") == 1]
         with open(fileName, "w") as handle:
