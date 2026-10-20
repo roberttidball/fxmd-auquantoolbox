@@ -1,6 +1,7 @@
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone
+from urllib.error import URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -30,7 +31,9 @@ class FXMacroDataCalendarDataSource(DataSource):
             startDateStr,
             endDateStr,
         )
-        self._allTimes, self._groupedInstrumentUpdates = self.getGroupedInstrumentUpdates()
+        self._allTimes, self._groupedInstrumentUpdates = (
+            self.getGroupedInstrumentUpdates()
+        )
         self.processAllInstrumentUpdates(pad=False)
 
     def getAllInstrumentIds(self):
@@ -43,7 +46,10 @@ class FXMacroDataCalendarDataSource(DataSource):
             "start_date": self._startDate.strftime("%Y-%m-%d"),
             "end_date": self._endDate.strftime("%Y-%m-%d"),
         }
-        headers = {"Accept": "application/json", "User-Agent": "auquantoolbox-fxmacrodata"}
+        headers = {
+            "Accept": "application/json",
+            "User-Agent": "auquantoolbox-fxmacrodata",
+        }
         api_key = (os.getenv("FXMD_API_KEY") or "").strip()
         if any(ch.isspace() or not ch.isprintable() for ch in api_key):
             raise ValueError("FXMD_API_KEY contains whitespace or control characters")
@@ -55,14 +61,26 @@ class FXMacroDataCalendarDataSource(DataSource):
         if api_key:
             # Unredirected headers are not copied onto a redirected request.
             request.add_unredirected_header("X-API-Key", api_key)
-        with urlopen(request, timeout=20) as response:
-            payload = json.loads(response.read().decode("utf-8"))
+        try:
+            with urlopen(request, timeout=20) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except (URLError, OSError, ValueError):
+            raise ValueError("Unable to load FXMacroData calendar") from None
         rows = payload.get("data") if isinstance(payload, dict) else None
-        if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
-            detail = payload.get("detail") if isinstance(payload, dict) else None
-            raise ValueError("Unexpected FXMacroData calendar response%s" % (": %s" % detail if detail else ""))
+        if (
+            not isinstance(rows, list)
+            or not all(isinstance(row, dict) for row in rows)
+            or payload.get("error")
+            or payload.get("detail")
+        ):
+            raise ValueError("Unexpected FXMacroData calendar response")
         if self._topTierOnly:
-            rows = [row for row in rows if row.get("top_tier_for_currency") or row.get("market_tier") == 1]
+            rows = [
+                row
+                for row in rows
+                if row.get("top_tier_for_currency") is True
+                or (type(row.get("market_tier")) is int and row["market_tier"] == 1)
+            ]
         with open(fileName, "w") as handle:
             json.dump(rows, handle)
         return True
@@ -71,7 +89,12 @@ class FXMacroDataCalendarDataSource(DataSource):
         return os.path.join(
             self._cachedFolderName,
             self._dataSetId,
-            "%s_%s_%s.json" % (self._currency, self._startDate.strftime("%Y%m%d"), self._endDate.strftime("%Y%m%d")),
+            "%s_%s_%s.json"
+            % (
+                self._currency,
+                self._startDate.strftime("%Y%m%d"),
+                self._endDate.strftime("%Y%m%d"),
+            ),
         )
 
     def getInstrumentUpdateFromRow(self, instrumentId, row):
@@ -82,7 +105,7 @@ class FXMacroDataCalendarDataSource(DataSource):
             "release": row.get("release"),
             "name": row.get("name"),
             "market_tier": row.get("market_tier"),
-            "top_tier_for_currency": bool(row.get("top_tier_for_currency")),
+            "top_tier_for_currency": row.get("top_tier_for_currency") is True,
             "actual": row.get("actual"),
             "previous": row.get("previous"),
             "consensus": row.get("consensus"),
@@ -102,20 +125,25 @@ class FXMacroDataCalendarDataSource(DataSource):
                 continue
             with open(fileName) as handle:
                 for row in json.load(handle):
-                    allInstrumentUpdates.append(self.getInstrumentUpdateFromRow(instrumentId, row))
+                    allInstrumentUpdates.append(
+                        self.getInstrumentUpdateFromRow(instrumentId, row)
+                    )
         from backtester.dataSource.data_source_utils import groupAndSortByTimeUpdates
 
         return groupAndSortByTimeUpdates(allInstrumentUpdates)
 
 
 def _event_time(row):
-    value = row.get("announcement_datetime_utc") or row.get("announcement_datetime_local")
-    if not value:
+    utc_value = row.get("announcement_datetime_utc")
+    value = utc_value or row.get("announcement_datetime_local")
+    if not isinstance(value, str) or "T" not in value:
         return None
-    text = str(value).replace("Z", "+00:00")
-    for suffix in ("+00:00", "-00:00"):
-        if text.endswith(suffix):
-            text = text[: -len(suffix)]
-    if "." in text:
-        text = text.split(".", 1)[0]
-    return datetime.strptime(text[:19], "%Y-%m-%dT%H:%M:%S")
+    try:
+        event_time = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if event_time.tzinfo is None:
+        if not utc_value:
+            return None
+        event_time = event_time.replace(tzinfo=timezone.utc)
+    return event_time.astimezone(timezone.utc).replace(tzinfo=None)
