@@ -38,6 +38,45 @@ adapter = load_adapter()
 
 
 class CalendarTests(unittest.TestCase):
+    def test_currency_stays_in_one_request_path_segment(self):
+        for currency in ("usd/extra", "usd?api_key=other", "usd#fragment", "../outside", "usd%2Fextra"):
+            with self.subTest(currency=currency), tempfile.TemporaryDirectory() as directory:
+                source = adapter.FXMacroDataCalendarDataSource.__new__(adapter.FXMacroDataCalendarDataSource)
+                source._currency = currency
+                source._startDate = source._endDate = datetime(2026, 10, 20)
+                source._topTierOnly = False
+                response = unittest.mock.MagicMock()
+                response.__enter__.return_value.read.return_value = b'{"data": []}'
+                with patch.object(adapter, "urlopen", return_value=response) as request, patch.dict("os.environ", {"FXMD_API_KEY": ""}):
+                    source.downloadAndAdjustData("macro_calendar", str(Path(directory) / "calendar.json"))
+                url = request.call_args.args[0].full_url
+                from urllib.parse import quote, urlsplit
+                parsed = urlsplit(url)
+                self.assertEqual(parsed.path, "/v1/calendar/" + quote(currency, safe=""))
+                self.assertEqual(parsed.query, "start_date=2026-10-20&end_date=2026-10-20")
+                self.assertEqual(parsed.fragment, "")
+
+    def test_currency_cannot_escape_calendar_cache_directory(self):
+        for currency in ("../outside", "../../outside", "usd/nested", "usd\\nested"):
+            with self.subTest(currency=currency), tempfile.TemporaryDirectory() as directory:
+                source = adapter.FXMacroDataCalendarDataSource.__new__(adapter.FXMacroDataCalendarDataSource)
+                source._currency = currency
+                source._startDate = source._endDate = datetime(2026, 10, 20)
+                source._cachedFolderName = directory
+                source._dataSetId = "dataset"
+                result = Path(source.getFileName("macro_calendar"))
+                self.assertEqual(result.resolve().parent, (Path(directory) / "dataset").resolve())
+                self.assertNotIn("/", result.name)
+                self.assertNotIn("\\", result.name)
+
+    def test_plain_currency_cache_filename_is_preserved(self):
+        source = adapter.FXMacroDataCalendarDataSource.__new__(adapter.FXMacroDataCalendarDataSource)
+        source._currency = "usd"
+        source._startDate = source._endDate = datetime(2026, 10, 20)
+        source._cachedFolderName = "/cache"
+        source._dataSetId = "dataset"
+        self.assertEqual(source.getFileName("macro_calendar"), "/cache/dataset/usd_20261020_20261020.json")
+
     def row_time(self, **row):
         return adapter._event_time(row)
 

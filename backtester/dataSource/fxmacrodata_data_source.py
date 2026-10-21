@@ -2,7 +2,7 @@ import json
 import os
 from datetime import datetime, timezone
 from urllib.error import URLError
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 from backtester.dataSource.data_source import DataSource
@@ -54,7 +54,7 @@ class FXMacroDataCalendarDataSource(DataSource):
         if any(ch.isspace() or not ch.isprintable() for ch in api_key):
             raise ValueError("FXMD_API_KEY contains whitespace or control characters")
         url = "https://api.fxmacrodata.com/v1/calendar/%s?%s" % (
-            self._currency,
+            quote(self._currency, safe=""),
             urlencode(params),
         )
         request = Request(url, headers=headers)
@@ -91,7 +91,7 @@ class FXMacroDataCalendarDataSource(DataSource):
             self._dataSetId,
             "%s_%s_%s.json"
             % (
-                self._currency,
+                quote(self._currency, safe=""),
                 self._startDate.strftime("%Y%m%d"),
                 self._endDate.strftime("%Y%m%d"),
             ),
